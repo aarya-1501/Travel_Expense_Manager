@@ -1,111 +1,30 @@
 
-import sqlite3
+import streamlit as st
+from supabase import create_client
 from pathlib import Path
-
-# Get the main project directory
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Database file location
-DB_PATH = BASE_DIR / "database" / "travel_expenses.db"
+from collections import defaultdict
 
 
 # --------------------------------------------------
-# CREATE DATABASE CONNECTION
+# SUPABASE CONNECTION
 # --------------------------------------------------
 
+@st.cache_resource
 def get_connection():
 
-    connection = sqlite3.connect(DB_PATH)
-
-    connection.row_factory = sqlite3.Row
-
-    return connection
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
 
 
 # --------------------------------------------------
-# CREATE DATABASE TABLES
+# INITIALIZE DATABASE
 # --------------------------------------------------
 
 def create_tables():
-
-    connection = get_connection()
-
-    cursor = connection.cursor()
-
-    # Create Trips Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trips (
-
-            trip_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            trip_name TEXT NOT NULL,
-
-            destination TEXT NOT NULL,
-
-            start_date TEXT NOT NULL,
-
-            end_date TEXT NOT NULL,
-
-            budget REAL NOT NULL,
-
-            description TEXT,
-
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-
-        )
-    """)
-
-    # Create Expenses Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-
-            expense_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            trip_id INTEGER NOT NULL,
-
-            category TEXT NOT NULL,
-
-            amount REAL NOT NULL,
-
-            expense_date TEXT NOT NULL,
-
-            description TEXT,
-
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (trip_id) REFERENCES trips(trip_id)
-
-        )
-    """)
-
-    # Create Prediction History Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_history (
-
-            prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            trip_id INTEGER NOT NULL,
-
-            prediction_date TEXT DEFAULT CURRENT_TIMESTAMP,
-
-            predicted_total REAL NOT NULL,
-
-            actual_expenses_at_prediction REAL NOT NULL,
-
-            planned_budget REAL NOT NULL,
-
-            elapsed_days INTEGER NOT NULL,
-
-            trip_days INTEGER NOT NULL,
-
-            FOREIGN KEY (trip_id) REFERENCES trips(trip_id)
-
-        )
-    """)
-
-    connection.commit()
-
-    connection.close()
+    # Tables have already been created in Supabase.
+    pass
 
 
 # --------------------------------------------------
@@ -114,36 +33,18 @@ def create_tables():
 
 def add_trip(trip_name, destination, start_date, end_date, budget, description):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = supabase.table("trips").insert({
+        "trip_name": trip_name,
+        "destination": destination,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "budget": float(budget),
+        "description": description
+    }).execute()
 
-    cursor.execute("""
-        INSERT INTO trips (
-            trip_name,
-            destination,
-            start_date,
-            end_date,
-            budget,
-            description
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        trip_name,
-        destination,
-        str(start_date),
-        str(end_date),
-        budget,
-        description
-    ))
-
-    connection.commit()
-
-    trip_id = cursor.lastrowid
-
-    connection.close()
-
-    return trip_id
+    return response.data[0]["trip_id"]
 
 
 # --------------------------------------------------
@@ -152,20 +53,16 @@ def add_trip(trip_name, destination, start_date, end_date, budget, description):
 
 def get_all_trips():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = (
+        supabase.table("trips")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT * FROM trips
-        ORDER BY created_at DESC
-    """)
-
-    trips = cursor.fetchall()
-
-    connection.close()
-
-    return trips
+    return response.data
 
 
 # --------------------------------------------------
@@ -174,34 +71,17 @@ def get_all_trips():
 
 def add_expense(trip_id, category, amount, expense_date, description):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = supabase.table("expenses").insert({
+        "trip_id": int(trip_id),
+        "category": category,
+        "amount": float(amount),
+        "expense_date": str(expense_date),
+        "description": description
+    }).execute()
 
-    cursor.execute("""
-        INSERT INTO expenses (
-            trip_id,
-            category,
-            amount,
-            expense_date,
-            description
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        trip_id,
-        category,
-        amount,
-        str(expense_date),
-        description
-    ))
-
-    connection.commit()
-
-    expense_id = cursor.lastrowid
-
-    connection.close()
-
-    return expense_id
+    return response.data[0]["expense_id"]
 
 
 # --------------------------------------------------
@@ -210,24 +90,25 @@ def add_expense(trip_id, category, amount, expense_date, description):
 
 def get_all_expenses():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = (
+        supabase.table("expenses")
+        .select("*, trips!inner(trip_name, destination)")
+        .order("expense_date", desc=True)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            expenses.*,
-            trips.trip_name,
-            trips.destination
-        FROM expenses
-        INNER JOIN trips
-        ON expenses.trip_id = trips.trip_id
-        ORDER BY expenses.expense_date DESC
-    """)
+    expenses = []
 
-    expenses = cursor.fetchall()
+    for row in response.data:
 
-    connection.close()
+        trip = row.pop("trips")
+
+        row["trip_name"] = trip["trip_name"]
+        row["destination"] = trip["destination"]
+
+        expenses.append(row)
 
     return expenses
 
@@ -238,29 +119,14 @@ def get_all_expenses():
 
 def update_expense(expense_id, category, amount, expense_date, description):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        UPDATE expenses
-        SET
-            category = ?,
-            amount = ?,
-            expense_date = ?,
-            description = ?
-        WHERE expense_id = ?
-    """, (
-        category,
-        amount,
-        str(expense_date),
-        description,
-        expense_id
-    ))
-
-    connection.commit()
-
-    connection.close()
+    supabase.table("expenses").update({
+        "category": category,
+        "amount": float(amount),
+        "expense_date": str(expense_date),
+        "description": description
+    }).eq("expense_id", int(expense_id)).execute()
 
 
 # --------------------------------------------------
@@ -269,18 +135,11 @@ def update_expense(expense_id, category, amount, expense_date, description):
 
 def delete_expense(expense_id):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        DELETE FROM expenses
-        WHERE expense_id = ?
-    """, (expense_id,))
-
-    connection.commit()
-
-    connection.close()
+    supabase.table("expenses").delete().eq(
+        "expense_id", int(expense_id)
+    ).execute()
 
 
 # --------------------------------------------------
@@ -289,34 +148,29 @@ def delete_expense(expense_id):
 
 def get_dashboard_summary():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    trips = (
+        supabase.table("trips")
+        .select("budget")
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            COUNT(*) AS total_trips,
-            COALESCE(SUM(budget), 0) AS total_budget
-        FROM trips
-    """)
+    expenses = (
+        supabase.table("expenses")
+        .select("amount")
+        .execute()
+    )
 
-    trip_summary = cursor.fetchone()
+    total_trips = len(trips.data)
 
-    cursor.execute("""
-        SELECT
-            COALESCE(SUM(amount), 0) AS total_expenses
-        FROM expenses
-    """)
+    total_budget = sum(
+        float(row["budget"]) for row in trips.data
+    )
 
-    expense_summary = cursor.fetchone()
-
-    connection.close()
-
-    total_trips = trip_summary["total_trips"]
-
-    total_budget = trip_summary["total_budget"]
-
-    total_expenses = expense_summary["total_expenses"]
+    total_expenses = sum(
+        float(row["amount"]) for row in expenses.data
+    )
 
     remaining_balance = total_budget - total_expenses
 
@@ -334,24 +188,33 @@ def get_dashboard_summary():
 
 def get_expenses_by_category():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = (
+        supabase.table("expenses")
+        .select("category, amount")
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            category,
-            SUM(amount) AS total_amount
-        FROM expenses
-        GROUP BY category
-        ORDER BY total_amount DESC
-    """)
+    category_totals = defaultdict(float)
 
-    category_expenses = cursor.fetchall()
+    for row in response.data:
 
-    connection.close()
+        category_totals[row["category"]] += float(row["amount"])
 
-    return category_expenses
+    result = [
+        {
+            "category": category,
+            "total_amount": amount
+        }
+        for category, amount in category_totals.items()
+    ]
+
+    return sorted(
+        result,
+        key=lambda x: x["total_amount"],
+        reverse=True
+    )
 
 
 # --------------------------------------------------
@@ -360,27 +223,43 @@ def get_expenses_by_category():
 
 def get_expenses_by_trip():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    trips = (
+        supabase.table("trips")
+        .select("trip_id, trip_name, destination")
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            trips.trip_name,
-            trips.destination,
-            COALESCE(SUM(expenses.amount), 0) AS total_amount
-        FROM trips
-        LEFT JOIN expenses
-        ON trips.trip_id = expenses.trip_id
-        GROUP BY trips.trip_id
-        ORDER BY total_amount DESC
-    """)
+    expenses = (
+        supabase.table("expenses")
+        .select("trip_id, amount")
+        .execute()
+    )
 
-    trip_expenses = cursor.fetchall()
+    trip_totals = defaultdict(float)
 
-    connection.close()
+    for expense in expenses.data:
 
-    return trip_expenses
+        trip_totals[expense["trip_id"]] += float(
+            expense["amount"]
+        )
+
+    result = []
+
+    for trip in trips.data:
+
+        result.append({
+            "trip_name": trip["trip_name"],
+            "destination": trip["destination"],
+            "total_amount": trip_totals[trip["trip_id"]]
+        })
+
+    return sorted(
+        result,
+        key=lambda x: x["total_amount"],
+        reverse=True
+    )
 
 
 # --------------------------------------------------
@@ -396,36 +275,27 @@ def save_prediction_history(
     trip_days
 ):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = supabase.table("prediction_history").insert({
 
-    cursor.execute("""
-        INSERT INTO prediction_history (
-            trip_id,
-            predicted_total,
-            actual_expenses_at_prediction,
-            planned_budget,
-            elapsed_days,
-            trip_days
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        trip_id,
-        predicted_total,
-        actual_expenses_at_prediction,
-        planned_budget,
-        elapsed_days,
-        trip_days
-    ))
+        "trip_id": int(trip_id),
 
-    connection.commit()
+        "predicted_total": float(predicted_total),
 
-    prediction_id = cursor.lastrowid
+        "actual_expenses_at_prediction": float(
+            actual_expenses_at_prediction
+        ),
 
-    connection.close()
+        "planned_budget": float(planned_budget),
 
-    return prediction_id
+        "elapsed_days": int(elapsed_days),
+
+        "trip_days": int(trip_days)
+
+    }).execute()
+
+    return response.data[0]["prediction_id"]
 
 
 # --------------------------------------------------
@@ -434,26 +304,27 @@ def save_prediction_history(
 
 def get_prediction_history(trip_id):
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = (
+        supabase.table("prediction_history")
+        .select("*, trips!inner(trip_name, destination)")
+        .eq("trip_id", int(trip_id))
+        .order("prediction_date", desc=True)
+        .order("prediction_id", desc=True)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            prediction_history.*,
-            trips.trip_name,
-            trips.destination
-        FROM prediction_history
-        INNER JOIN trips
-        ON prediction_history.trip_id = trips.trip_id
-        WHERE prediction_history.trip_id = ?
-        ORDER BY prediction_history.prediction_date DESC,
-                 prediction_history.prediction_id DESC
-    """, (trip_id,))
+    history = []
 
-    history = cursor.fetchall()
+    for row in response.data:
 
-    connection.close()
+        trip = row.pop("trips")
+
+        row["trip_name"] = trip["trip_name"]
+        row["destination"] = trip["destination"]
+
+        history.append(row)
 
     return history
 
@@ -464,36 +335,25 @@ def get_prediction_history(trip_id):
 
 def get_all_prediction_history():
 
-    connection = get_connection()
+    supabase = get_connection()
 
-    cursor = connection.cursor()
+    response = (
+        supabase.table("prediction_history")
+        .select("*, trips!inner(trip_name, destination)")
+        .order("prediction_date", desc=True)
+        .order("prediction_id", desc=True)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            prediction_history.*,
-            trips.trip_name,
-            trips.destination
-        FROM prediction_history
-        INNER JOIN trips
-        ON prediction_history.trip_id = trips.trip_id
-        ORDER BY prediction_history.prediction_date DESC,
-                 prediction_history.prediction_id DESC
-    """)
+    history = []
 
-    history = cursor.fetchall()
+    for row in response.data:
 
-    connection.close()
+        trip = row.pop("trips")
+
+        row["trip_name"] = trip["trip_name"]
+        row["destination"] = trip["destination"]
+
+        history.append(row)
 
     return history
-
-
-# --------------------------------------------------
-# RUN DATABASE CREATION
-# --------------------------------------------------
-
-if __name__ == "__main__":
-
-    create_tables()
-
-    print("Database and tables created successfully!")
-    print("Prediction history table is ready!")
